@@ -91,23 +91,3 @@ final class ProposalNotifier: NSObject, UNUserNotificationCenterDelegate, @unche
         }
     }
 }
-
-@MainActor
-enum MenuBarExtraPresenter {
-    @discardableResult
-    static func show(in windows: [NSWindow] = NSApp.windows) -> Bool {
-        guard let button = windows.lazy.compactMap({ window in
-            statusBarButton(in: window.contentView)
-        }).first else { return false }
-        button.performClick(nil)
-        return true
-    }
-
-    private static func statusBarButton(in view: NSView?) -> NSStatusBarButton? {
-        guard let view else { return nil }
-        if let button = view as? NSStatusBarButton {
-            return button
-        }
-        return view.subviews.lazy.compactMap(statusBarButton(in:)).first
-    }
-}

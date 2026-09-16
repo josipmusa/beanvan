@@ -8,48 +8,150 @@ struct BeanvanApp: App {
     @StateObject private var appModel = AppModel.shared
 
     var body: some Scene {
-        MenuBarExtra {
-            if let peerManager = appModel.peerManager,
-               let scheduleStore = appModel.scheduleStore,
-               let scheduler = appModel.scheduler,
-               let proposalStore = appModel.proposalStore {
-                CoffeePopover(
-                    appModel: appModel,
-                    peerManager: peerManager,
-                    scheduleStore: scheduleStore,
-                    scheduler: scheduler,
-                    proposalStore: proposalStore,
-                    previewAnimation: appDelegate.previewAnimation
-                )
-            } else {
-                ContentUnavailableView(
-                    "Beanvan could not start",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(appModel.startupError ?? "Unknown startup error")
-                )
-                .frame(width: 312, height: 220)
-            }
-        } label: {
-            if let peerManager = appModel.peerManager,
-               let scheduler = appModel.scheduler,
-               let proposalStore = appModel.proposalStore {
-                MenuBarTruckIcon(
-                    peerManager: peerManager,
-                    scheduler: scheduler,
-                    proposalStore: proposalStore
-                )
-            } else {
-                Image(nsImage: TruckTemplateImage.image(steam: false))
-                    .accessibilityLabel("Beanvan")
-            }
-        }
-        .menuBarExtraStyle(.window)
-
         Settings {
             if let proposalStore = appModel.proposalStore {
                 BeanvanSettingsView(appModel: appModel, proposalStore: proposalStore)
             }
         }
+    }
+}
+
+@MainActor
+final class PopoverHostingController<Content: View>: NSHostingController<Content> {
+    var onPreferredContentSizeChange: ((NSSize) -> Void)?
+
+    override var preferredContentSize: NSSize {
+        didSet {
+            guard preferredContentSize.height != oldValue.height else { return }
+            onPreferredContentSizeChange?(preferredContentSize)
+        }
+    }
+}
+
+@MainActor
+final class PassthroughHostingView<Content: View>: NSHostingView<Content> {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+@MainActor
+final class MenuBarPopoverController: NSObject {
+    private let statusItem: NSStatusItem
+    private let popover: NSPopover
+    private let contentHostingController: PopoverHostingController<AnyView>
+    private let statusHostingView: PassthroughHostingView<AnyView>
+    private var preparedInitialSize = false
+
+    init(appModel: AppModel, previewAnimation: @escaping () -> Void) {
+        statusItem = NSStatusBar.system.statusItem(withLength: 30)
+        popover = NSPopover()
+        contentHostingController = PopoverHostingController(
+            rootView: Self.popoverContent(
+                appModel: appModel,
+                previewAnimation: previewAnimation
+            )
+        )
+        statusHostingView = PassthroughHostingView(
+            rootView: Self.statusContent(appModel: appModel)
+        )
+        super.init()
+
+        contentHostingController.sizingOptions = [.preferredContentSize]
+        contentHostingController.onPreferredContentSizeChange = { [weak self] size in
+            self?.updateContentSize(size)
+        }
+
+        popover.animates = true
+        popover.behavior = .transient
+        popover.contentViewController = contentHostingController
+
+        if let button = statusItem.button {
+            button.target = self
+            button.action = #selector(togglePopover)
+            statusHostingView.translatesAutoresizingMaskIntoConstraints = false
+            button.addSubview(statusHostingView)
+            NSLayoutConstraint.activate([
+                statusHostingView.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+                statusHostingView.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+                statusHostingView.widthAnchor.constraint(equalToConstant: 26),
+                statusHostingView.heightAnchor.constraint(equalToConstant: 22),
+            ])
+        }
+    }
+
+    static func normalizedContentSize(_ preferredSize: NSSize) -> NSSize {
+        NSSize(width: BeanvanDesign.popoverWidth, height: preferredSize.height)
+    }
+
+    func show() {
+        guard !popover.isShown, let button = statusItem.button else { return }
+        if !preparedInitialSize {
+            updateContentSize(contentHostingController.sizeThatFits(in: NSSize(
+                width: BeanvanDesign.popoverWidth,
+                height: .infinity
+            )))
+            preparedInitialSize = true
+        }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    func invalidate() {
+        popover.close()
+        NSStatusBar.system.removeStatusItem(statusItem)
+    }
+
+    @objc private func togglePopover() {
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            show()
+        }
+    }
+
+    private func updateContentSize(_ preferredSize: NSSize) {
+        let size = Self.normalizedContentSize(preferredSize)
+        guard popover.contentSize != size else { return }
+        popover.contentSize = size
+    }
+
+    private static func popoverContent(
+        appModel: AppModel,
+        previewAnimation: @escaping () -> Void
+    ) -> AnyView {
+        if let peerManager = appModel.peerManager,
+           let scheduleStore = appModel.scheduleStore,
+           let scheduler = appModel.scheduler,
+           let proposalStore = appModel.proposalStore {
+            return AnyView(CoffeePopover(
+                appModel: appModel,
+                peerManager: peerManager,
+                scheduleStore: scheduleStore,
+                scheduler: scheduler,
+                proposalStore: proposalStore,
+                previewAnimation: previewAnimation
+            ))
+        }
+        return AnyView(ContentUnavailableView(
+            "Beanvan could not start",
+            systemImage: "exclamationmark.triangle",
+            description: Text(appModel.startupError ?? "Unknown startup error")
+        )
+        .frame(width: BeanvanDesign.popoverWidth, height: 220))
+    }
+
+    private static func statusContent(appModel: AppModel) -> AnyView {
+        if let peerManager = appModel.peerManager,
+           let scheduler = appModel.scheduler,
+           let proposalStore = appModel.proposalStore {
+            return AnyView(MenuBarTruckIcon(
+                peerManager: peerManager,
+                scheduler: scheduler,
+                proposalStore: proposalStore
+            ))
+        }
+        return AnyView(Image(nsImage: TruckTemplateImage.image(steam: false))
+            .accessibilityLabel("Beanvan"))
     }
 }
 
@@ -260,14 +362,19 @@ final class AppModel: ObservableObject {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlayController: OverlayController?
     private var firingGate: FiringGate?
+    private var menuBarPopoverController: MenuBarPopoverController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         overlayController = OverlayController(resources: AppResources.shared)
         firingGate = FiringGate()
-        ProposalNotifier.shared.onProposalSelected = {
+        menuBarPopoverController = MenuBarPopoverController(
+            appModel: AppModel.shared,
+            previewAnimation: { [weak self] in self?.previewAnimation() }
+        )
+        ProposalNotifier.shared.onProposalSelected = { [weak self] in
             NSApp.activate()
-            MenuBarExtraPresenter.show()
+            self?.menuBarPopoverController?.show()
         }
         if AppModel.shared.proposalNotificationsEnabled {
             ProposalNotifier.shared.requestAuthorization()
@@ -288,6 +395,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         ProposalNotifier.shared.onProposalSelected = nil
+        menuBarPopoverController?.invalidate()
+        menuBarPopoverController = nil
         AppModel.shared.scheduler?.stop()
         AppModel.shared.proposalStore?.stop()
         AppModel.shared.peerManager?.stop()

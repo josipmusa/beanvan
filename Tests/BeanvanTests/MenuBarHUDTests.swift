@@ -5,8 +5,8 @@ import Testing
 
 struct MenuBarHUDTests {
     @MainActor
-    @Test func popoverHasStableViewportSizeForTahoeMenuBarWindows() {
-        #expect(BeanvanDesign.popoverSize == CGSize(width: 320, height: 475))
+    @Test func popoverUsesFixedWidth() {
+        #expect(BeanvanDesign.popoverWidth == 320)
     }
 
     @Test func iconMovesFromIdleToSteamAndBackAtFire() {
